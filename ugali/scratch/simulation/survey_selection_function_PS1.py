@@ -152,12 +152,12 @@ class surveySelectionFunction:
         self.classifier = None
 
         self.loadFracdet()
-        self.loadRealResults()
+        #self.loadRealResults()
         #self.loadClassifier()
 
     def loadFracdet(self):
         if self.m_fracdet is None:
-            print('Loading fracdet map from %s ...'%(self.config['infile']['fracdet']))
+            print('Loading pseudo-fracdet map from %s ...'%(self.config['infile']['fracdet']))
             self.m_fracdet = hp.read_map(self.config['infile']['fracdet'], nest=False)
 
     def loadPopulationMetadata(self):
@@ -165,9 +165,9 @@ class surveySelectionFunction:
         self.data_population = reader[1].data
         
     def loadSimResults(self):
-        reader = pyfits.open(self.config[self.algorithm]['sim_results'])
-        self.data_sim = reader[1].data
-        reader.close()
+            reader = pyfits.open(self.config[self.algorithm]['sim_results'])
+            self.data_sim = reader[1].data
+            reader.close()
     
     def loadRealResults(self):
         if self.data_real is None:
@@ -181,13 +181,28 @@ class surveySelectionFunction:
         Self-consistently train the classifier
         """
 
-        #Load results
-        self.loadSimResults() 
+        #self.loadPopulationMetadata()
+        self.loadSimResults()
         
         #Clean up results
         nnanidx = np.logical_and(~np.isnan(self.data_sim['TS']),~np.isnan(self.data_sim['SIG']))
         ninfidx = np.logical_and(~np.isinf(self.data_sim['TS']),~np.isinf(self.data_sim['SIG']))
+        #self.data_population = self.data_population[np.logical_and(nnanidx,ninfidx)]
         self.data_sim = self.data_sim[np.logical_and(nnanidx,ninfidx)]
+        
+        #PS1-specific cuts
+        #mu_cut = np.logical_and(self.data_sim['surface_brightness'] > 28, self.data_sim['surface_brightness'] < 31)
+        #Mv_cut = np.logical_and(self.data_sim['abs_mag'] > -8.9, self.data_sim['abs_mag'] < -1.2)
+        #r_cut = np.logical_and(self.data_sim['distance'] > 30, self.data_sim['distance'] < 220)
+        #r12_cut = np.logical_and(self.data_sim['r_physical'] > 0.02, self.data_sim['r_physical'] < 0.6)
+        
+        #temp_cut = np.logical_and(np.logical_and(np.logical_and(mu_cut,Mv_cut),r_cut),r12_cut)
+        dec_cut = self.data_sim['dec'] > -25
+        EBV_cut = self.data_sim['EBV'] < 0.2
+        modulus_cut = self.data_sim['DISTANCE_MODULUS'] < 21.75
+        PS1_cuts = np.logical_and(dec_cut,np.logical_and(EBV_cut,modulus_cut))
+        #self.data_population = self.data_population[PS1_cuts]
+        self.data_sim = self.data_sim[PS1_cuts]
         
         #Ugali flags
         processed_ok = np.logical_or(self.data_sim['FLAG']==0, self.data_sim['FLAG']==8)
@@ -214,7 +229,7 @@ class surveySelectionFunction:
                 x.append(np.log10(self.data_sim[key]))
         X = np.vstack(x).T
         
-        #Apply cuts and split into train/test sets
+        #Construct dataset
         mc_source_id_detect = self.data_sim['MC_SOURCE_ID'][cut_detect_sim_results_sig & cut_detect_sim_results_ts]
         cut_detect = np.in1d(self.data_sim['MC_SOURCE_ID'], mc_source_id_detect)
         
@@ -226,13 +241,13 @@ class surveySelectionFunction:
         #Train random forest classifier
         if True:
             t_start = time.time()
-            parameters = {'n_estimators':(100, 250, 500), "min_samples_leaf": [1,2,4], 'criterion':["gini","entropy"]}
-            rf = RandomForestClassifier(oob_score=True)
+            parameters = {'n_estimators':(100, 250, 500), "min_samples_leaf": [1,2,4]}#, 'criterion':["gini","entropy"]}
+            rf = RandomForestClassifier(oob_score=True)#, class_weight={0:1,1:5})
             rf_tuned = GridSearchCV(rf, parameters, cv=3, verbose=1)
             self.classifier = rf_tuned.fit(X_train, Y_train)
             
             # Print the best score and estimator:
-            print('Best OOB Score:', self.classifier.best_score_)
+            print('Best Score:', self.classifier.best_score_)
             print(self.classifier.best_estimator_)
             print(self.classifier.best_params_)
             t_end = time.time()
@@ -243,7 +258,7 @@ class surveySelectionFunction:
             writer = open(self.config[self.algorithm]['classifier'], 'w')
             writer.write(classifier_data)
             writer.close()
-
+            
         #Else load classifier
         else:
             self.loadClassifier()
@@ -269,7 +284,7 @@ class surveySelectionFunction:
         plt.tick_params(labelsize=12)
         plt.show()
         
-        #ROC curve and AUC for each class:
+        #ROC curve and AUC for each class
         BestRFselector = self.classifier.best_estimator_
         print(BestRFselector.feature_importances_)
         y_pred_best = BestRFselector.predict_proba(X_test)
@@ -282,17 +297,17 @@ class surveySelectionFunction:
             roc_auc[label] = auc(fpr[label], tpr[label])
             
         plt.figure(figsize=(8,6))
-        plt.plot([0, 1], [1, 1], color='red', linestyle='-', linewidth=3, label='Perfect Classifier (AUC = %0.3f)' % (1.0))
-        plt.plot(fpr[1], tpr[1], lw=3, label='Random Forest (AUC = %0.3f)' % (roc_auc[1]), color='blue')
-        plt.plot([0, 1], [0, 1], color='black', linestyle=':', linewidth=2.5, label='Random Classifier (AUC = %0.3f)' % (0.5))
+        plt.plot([0, 1], [1, 1], color='red', linestyle='-', linewidth=3, label='Perfect Classifier (AUC = %0.2f)' % (1.0))
+        plt.plot(fpr[1], tpr[1], lw=3, label='Random Forest (AUC = %0.2f)' % (roc_auc[1]), color='blue')
+        plt.plot([0, 1], [0, 1], color='black', linestyle=':', linewidth=2.5, label='Random Classifier (AUC = %0.2f)' % (0.5))
+
         plt.xlim([0.0, 1.0])
         plt.ylim([0.0, 1.025])
         plt.tick_params(labelsize=16)
         plt.xlabel('False Positive Rate', fontsize=20, labelpad=8)
         plt.ylabel('True Positive Rate', fontsize=20, labelpad=8)
         plt.legend(loc="lower right", fontsize=16)
-        plt.savefig('ROC.pdf')
-        plt.show()
+        plt.savefig('ROC_PS1.pdf')
 
         self.validateClassifier(cut_detect, cut_train, cut_test, cut_geometry, y_pred)
 
@@ -325,7 +340,7 @@ class surveySelectionFunction:
                      'why_not': 'magenta',
                      'actual': 'black',
                      'hsc': 'black'}
-        
+
         import matplotlib
         cmap = matplotlib.colors.ListedColormap(['Gold', 'Orange', 'DarkOrange', 'OrangeRed', 'Red'])
         title = r'$N_{\rm{train}} =$ %i ; $N_{\rm{test}} =$ %i'%(len(cut_train),len(cut_test))
@@ -375,7 +390,7 @@ class surveySelectionFunction:
             bin_prob_err_hi[ii] = errorbar[1]
             bin_prob_err_lo[ii] = errorbar[0]
             bin_counts[ii] = np.sum(cut_bin)
-        
+
         fig = plt.figure(figsize=(8,6))
         ax = fig.add_subplot(111)
         sc = ax.scatter(centers, bin_prob, c=bin_counts, edgecolor='red', s=50, cmap='Reds', zorder=999)
@@ -395,7 +410,7 @@ class surveySelectionFunction:
         cbar.set_label(r'Counts',size=20,labelpad=4)
         cbar.ax.tick_params(labelsize=16) 
         plt.tight_layout()
-        plt.savefig('training.pdf')
+        plt.savefig('training_PS1.pdf')
         plt.show()
 
     def loadClassifier(self):
@@ -409,13 +424,12 @@ class surveySelectionFunction:
 
     def applyFracdet(self, lon, lat):
         """
-        Enforce minimum fracdet for a satellite to be considered detectable
-        True is passes fracdet cut
+        We want to enforce minimum fracdet for a satellite to be considered detectable
+        True is passes pseudo-fracdet cut
         """
         self.loadFracdet()
         fracdet_core = meanFracdet(self.m_fracdet, lon, lat, np.tile(0.1, len(lon)))
         fracdet_wide = meanFracdet(self.m_fracdet, lon, lat, np.tile(0.5, len(lon)))
-        
         return (fracdet_core >= self.config[self.algorithm]['fracdet_core_threshold']) \
             & (fracdet_wide >= self.config[self.algorithm]['fracdet_wide_threshold'])
 
@@ -424,14 +438,24 @@ class surveySelectionFunction:
         Exclude objects that are too close to hotspot
         True if passes hotspot cut
         """
-        self.loadRealResults()
-        lon_real = self.data_real['RA']
-        lat_real = self.data_real['DEC']
-
-        cut_hotspot = np.tile(True, len(lon))
-        for ii in range(0, len(lon)):
-            cut_hotspot[ii] = ~np.any(angsep(lon[ii], lat[ii], lon_real, lat_real) < self.config[self.algorithm]['hotspot_angsep_threshold'])
-
+        
+        #Galaxy association
+        cut_galaxy_association = np.tile(True, len(lon))
+        external_cat_list = ['Nilson73']
+        for external_cat in external_cat_list:
+            associate = ugali.candidate.associate.catalogFactory(external_cat)
+            match_candidate, match_external, angsep = associate.match(lon, lat, coord='cel', tol=0.1)
+            cut_galaxy_association[match_candidate] = False
+    
+        #Bright star association
+        cut_bsc = np.tile(True, len(lon))
+        reader_bsc = pyfits.open('bsc5.fits')
+        d_bsc = reader_bsc[1].data
+        ra_bsc, dec_bsc = ugali.utils.projector.galToCel(d_bsc['GLON'], d_bsc['GLAT'])
+        match_candidate, match_external, angsep = ugali.utils.projector.match(lon, lat, ra_bsc, dec_bsc, tol=0.1)
+        cut_bsc[match_candidate] = False
+        
+        cut_hotspot = cut_galaxy_association & cut_bsc
         return cut_hotspot
 
     def applyGeometry(self, lon, lat):
@@ -442,7 +466,7 @@ class surveySelectionFunction:
         flags_geometry = np.tile(0, len(lon))
         flags_geometry[~cut_fracdet] += 1
         flags_geometry[~cut_hotspot] += 2
-
+        
         return cut_geometry, flags_geometry
 
     def predict(self, lon, lat, **kwargs):
@@ -464,6 +488,7 @@ class surveySelectionFunction:
 
         x_test = np.vstack(x_test).T
         pred[cut_geometry] = self.classifier.predict_proba(x_test[cut_geometry])[:,1]
+
         self.validatePredict(pred, flags_geometry, lon, lat, kwargs['r_physical'], kwargs['abs_mag'], kwargs['distance'])
 
         return pred, flags_geometry
@@ -503,19 +528,19 @@ class surveySelectionFunction:
 ############################################################
 
 if __name__ == "__main__":
-    config_file = 'des_y3a2_survey_selection_function.yaml'
+    config_file = 'des_y3a2_survey_selection_function_PS1.yaml'
     my_ssf = surveySelectionFunction(config_file)
 
     my_ssf.trainClassifier()
     #my_ssf.loadClassifier()
 
-    #Test with the simulated population, just as an illustration
+    # Test with the simulated population, just as an illustration
     config = yaml.load(open(config_file))
     reader_sim = pyfits.open(config['infile']['population_metadata'])
     data_sim = reader_sim[1].data
     reader_sim.close()
     
-    #Alternatively, make your own new population
+    # Alternatively, make your own new population
     #distance = 10**np.random.uniform(np.log10(10.), np.log10(400.), n) # kpc
     #abs_mag = np.linspace()
     #r_physical = 10**np.random.uniform(np.log10(0.01), np.log10(1.), n) # kpc
