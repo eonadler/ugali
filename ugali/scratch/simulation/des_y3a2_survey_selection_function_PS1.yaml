@@ -15,7 +15,7 @@ operation:
   - - r_physical
     - log
 simple:
-  classifier: /nfs/slac/g/ki/ki21/cosmo/ollienad/Data/DES/PS1_classifier.txt
+  classifier: PS1_classifier.txt
   fracdet_core_threshold: 0.8
   fracdet_wide_threshold: 0.5
   hotspot_angsep_threshold: 0.5

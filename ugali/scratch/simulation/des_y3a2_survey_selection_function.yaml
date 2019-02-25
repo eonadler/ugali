@@ -1,5 +1,5 @@
 infile:
-  fracdet: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_griz_o.4096_t.32768_coverfoot_EQU.fits.gz
+  fracdet: y3a2_griz_o.4096_t.32768_coverfoot_EQU.fits.gz
   maglim_g: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_gold_1.0_cmv02-001_v1_nside4096_nest_g_depth.fits.gz
   maglim_r: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_gold_1.0_cmv02-001_v1_nside4096_nest_r_depth.fits.gz
   population_metadata: /u/ki/kadrlica/des/dsphs/y3a2/v3/results/sim_population_v12.2.0_des_results_0000001-0100000.fits
@@ -17,11 +17,11 @@ operation:
     - log
 
 simple:
-  classifier: /nfs/slac/g/ki/ki21/cosmo/ollienad/Data/DES/DES_classifier.txt
+  classifier: DES_classifier.txt
   fracdet_core_threshold: 0.8
   fracdet_wide_threshold: 0.5
   hotspot_angsep_threshold: 0.5
-  real_results: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a2/simple/sid/y3_gold_20/candidate_list_real.fits
+  real_results: candidate_list_real.fits
   sig_threshold: 7.0
   ts_threshold: 49.0
   sim_results: /u/ki/kadrlica/des/dsphs/y3a2/v3/results/sim_population_v12.2.0_des_results_0000001-0100000.fits 
