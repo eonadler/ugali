@@ -1,0 +1,27 @@
+infile:
+  fracdet: panstarrs_pseudo_fracdet.fits
+  maglim_g: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_gold_1.0_cmv02-001_v1_nside4096_nest_g_depth.fits.gz
+  maglim_r: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_gold_1.0_cmv02-001_v1_nside4096_nest_r_depth.fits.gz
+  population_metadata: /u/ki/kadrlica/ps1/dsphs/dr1/v0/results/sim_population_v12.2.1_ps1_results_0000001-1000000.fits 
+  stellar_density: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a2/skymap/des_y3a2_stellar_density_map_g_23_cel_nside_128.npy
+  mask: /nfs/slac/g/ki/ki21/cosmo/ollienad/Data/DES/
+operation:
+  survey: 'ps1'
+  algorithm: simple
+  params_geometric: []
+  params_intrinsic:
+  - - distance
+    - log
+  - - abs_mag
+    - linear
+  - - r_physical
+    - log
+simple:
+  classifier: PS1_classifier.txt
+  fracdet_core_threshold: 0.8
+  fracdet_wide_threshold: 0.5
+  hotspot_angsep_threshold: 0.5
+  real_results: candidate_list_real.fits
+  sig_threshold: 6.0
+  ts_threshold: 80.0
+  sim_results: /u/ki/kadrlica/ps1/dsphs/dr1/v0/results/sim_population_v12.2.1_ps1_results_0000001-1000000.fits

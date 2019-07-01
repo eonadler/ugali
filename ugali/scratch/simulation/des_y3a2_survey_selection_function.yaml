@@ -4,8 +4,9 @@ infile:
   maglim_r: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a1/data/maps/y3a2_gold_1.0_cmv02-001_v1_nside4096_nest_r_depth.fits.gz
   population_metadata: /u/ki/kadrlica/des/dsphs/y3a2/v3/results/sim_population_v12.2.0_des_results_0000001-0100000.fits
   stellar_density: /Users/keithbechtol/Documents/DES/projects/mw_substructure/des/y3a2/skymap/des_y3a2_stellar_density_map_g_23_cel_nside_128.npy
-
+  mask: /nfs/slac/g/ki/ki21/cosmo/ollienad/Data/DES/
 operation:
+  survey: 'des'
   algorithm: simple
   params_geometric: []
   params_intrinsic:
@@ -15,7 +16,6 @@ operation:
     - linear
   - - r_physical
     - log
-
 simple:
   classifier: DES_classifier.txt
   fracdet_core_threshold: 0.8
@@ -23,5 +23,5 @@ simple:
   hotspot_angsep_threshold: 0.5
   real_results: candidate_list_real.fits
   sig_threshold: 7.0
-  ts_threshold: 49.0
+  ts_threshold: 50.0
   sim_results: /u/ki/kadrlica/des/dsphs/y3a2/v3/results/sim_population_v12.2.0_des_results_0000001-0100000.fits 

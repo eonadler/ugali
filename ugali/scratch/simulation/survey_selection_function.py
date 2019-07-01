@@ -6,15 +6,20 @@ import time
 import os
 import pickle
 import yaml
+import pylab
 import numpy as np
 import healpy as hp
 import astropy.io.fits as pyfits
 import matplotlib.pyplot as plt
-import pylab
+import ugali.utils.projector
+import ugali.utils.healpix
+import ugali.candidate.associate as associate
 import ugali.utils.bayesian_efficiency
+import itertools
 
 import sklearn
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV
 from sklearn.metrics import roc_curve, auc
@@ -32,142 +37,35 @@ pylab.ion()
 
 ############################################################
 
-def phi2lon(phi): return np.degrees(phi)
-def lon2phi(lon): return np.radians(lon)
-
-def theta2lat(theta): return 90. - np.degrees(theta)
-def lat2theta(lat): return np.radians(90. - lat)
-
-def angToPix(nside, lon, lat, nest=False):
-    """
-    Input (lon, lat) in degrees instead of (theta, phi) in radians
-    """
-    theta = np.radians(90. - lat)
-    phi = np.radians(lon)
-    return hp.ang2pix(nside, theta, phi, nest=nest)
-
-def angToVec(lon, lat):
-    theta = lat2theta(lat)
-    phi = lon2phi(lon)
-    vec = hp.ang2vec(theta, phi)
-    return vec
-
-############################################################
-
-def query_disc(nside, vec, radius, inclusive=False, fact=4, nest=False):
-    """
-    Wrapper around healpy.query_disc to deal with old healpy implementation.
-    nside : int
-      The nside of the Healpix map.
-    vec : float, sequence of 3 elements
-      The coordinates of unit vector defining the disk center.
-    radius : float
-      The radius (in degrees) of the disc
-    inclusive : bool, optional
-      If False, return the exact set of pixels whose pixel centers lie 
-      within the disk; if True, return all pixels that overlap with the disk,
-      and maybe a few more. Default: False
-    fact : int, optional
-      Only used when inclusive=True. The overlapping test will be done at
-      the resolution fact*nside. For NESTED ordering, fact must be a power of 2,
-      else it can be any positive integer. Default: 4.
-    nest: bool, optional
-      if True, assume NESTED pixel ordering, otherwise, RING pixel ordering
-    """
-    try: 
-        # New-style call (healpy 1.6.3)
-        return hp.query_disc(nside, vec, np.radians(radius), inclusive, fact, nest)
-    except Exception as e: 
-        print(e)
-        # Old-style call (healpy 0.10.2)
-        return hp.query_disc(nside, vec, np.radians(radius), nest, deg=False)
-
-def angToDisc(nside, lon, lat, radius, inclusive=False, fact=4, nest=False):
-    """
-    Wrap `query_disc` to use lon, lat, and radius in degrees.
-    """
-    vec = angToVec(lon,lat)
-    return query_disc(nside,vec,radius,inclusive,fact,nest)
-
-############################################################
-
-def angsep(lon1, lat1, lon2, lat2):
-    """
-    Angular separation (deg) between two sky coordinates.
-    Borrowed from astropy (www.astropy.org)
-    Notes
-    -----
-    The angular separation is calculated using the Vincenty formula [1],
-    which is slighly more complex and computationally expensive than
-    some alternatives, but is stable at at all distances, including the
-    poles and antipodes.
-    [1] http://en.wikipedia.org/wiki/Great-circle_distance
-    """
-    lon1,lat1 = np.radians([lon1,lat1])
-    lon2,lat2 = np.radians([lon2,lat2])
-    
-    sdlon = np.sin(lon2 - lon1)
-    cdlon = np.cos(lon2 - lon1)
-    slat1 = np.sin(lat1)
-    slat2 = np.sin(lat2)
-    clat1 = np.cos(lat1)
-    clat2 = np.cos(lat2)
-
-    num1 = clat2 * sdlon
-    num2 = clat1 * slat2 - slat1 * clat2 * cdlon
-    denominator = slat1 * slat2 + clat1 * clat2 * cdlon
-
-    return np.degrees(np.arctan2(np.hypot(num1,num2), denominator))
-
-############################################################
-
-def meanFracdet(map_fracdet, lon_population, lat_population, radius_population):
-    """
-    Compute the mean fracdet within circular aperture (radius specified in decimal degrees)
-
-    lon, lat, and radius are taken to be arrays of the same length
-    """
-    nside_fracdet = hp.npix2nside(len(map_fracdet))
-    map_fracdet_zero = np.where(map_fracdet >= 0., map_fracdet, 0.)
-    fracdet_population = np.empty(len(lon_population))
-    for ii in range(0, len(lon_population)):
-        fracdet_population[ii] = np.mean(map_fracdet_zero[angToDisc(nside_fracdet, 
-                                                                    lon_population[ii], 
-                                                                    lat_population[ii], 
-                                                                    radius_population if np.isscalar(radius_population) else radius_population[ii],
-                                                                    inclusive=True)])
-    return fracdet_population
-
-############################################################
-
 class surveySelectionFunction:
 
     def __init__(self, config_file):
 
         self.config = yaml.load(open(config_file))
         self.algorithm = self.config['operation']['algorithm']
+        self.survey = self.config['operation']['survey']
 
         self.data_real = None
         self.m_fracdet = None
         self.classifier = None
 
-        self.loadFracdet()
-        self.loadRealResults()
+        self.loadMask()
+        #self.loadRealResults()
         #self.loadClassifier()
 
-    def loadFracdet(self):
-        if self.m_fracdet is None:
-            print('Loading fracdet map from %s ...'%(self.config['infile']['fracdet']))
-            self.m_fracdet = hp.read_map(self.config['infile']['fracdet'], nest=False)
+    def loadMask(self):
+        path_to_mask = self.config['infile']['mask'] + 'healpix_mask_{}.fits'.format(self.survey)
+        print('Loading survey mask from %s ...'%(path_to_mask))
+        self.mask = ugali.utils.healpix.read_map(path_to_mask, nest=True)
 
     def loadPopulationMetadata(self):
         reader = pyfits.open(self.config['infile']['population_metadata'])
         self.data_population = reader[1].data
         
     def loadSimResults(self):
-        reader = pyfits.open(self.config[self.algorithm]['sim_results'])
-        self.data_sim = reader[1].data
-        reader.close()
+            reader = pyfits.open(self.config[self.algorithm]['sim_results'])
+            self.data_sim = reader[1].data
+            reader.close()
     
     def loadRealResults(self):
         if self.data_real is None:
@@ -181,28 +79,39 @@ class surveySelectionFunction:
         Self-consistently train the classifier
         """
 
-        #Load results
-        self.loadSimResults() 
+        #self.loadPopulationMetadata()
+        self.loadSimResults()
         
         #Clean up results
         nnanidx = np.logical_and(~np.isnan(self.data_sim['TS']),~np.isnan(self.data_sim['SIG']))
         ninfidx = np.logical_and(~np.isinf(self.data_sim['TS']),~np.isinf(self.data_sim['SIG']))
         self.data_sim = self.data_sim[np.logical_and(nnanidx,ninfidx)]
-        
-        #Ugali flags
         processed_ok = np.logical_or(self.data_sim['FLAG']==0, self.data_sim['FLAG']==8)
         self.data_sim = self.data_sim[processed_ok]
+        self.data_sim = self.data_sim[self.data_sim['DIFFICULTY']==0]
         
-        #Geometry cuts
-        cut_geometry, flags_geometry = self.applyGeometry(self.data_sim['RA'], self.data_sim['DEC'])
+        pix = ugali.utils.healpix.angToPix(4096, self.data_sim['ra'], self.data_sim['dec'], nest=True)
         
-        #Difficulty cuts
-        cut_detect_sim_results_sig = np.logical_or(self.data_sim['DIFFICULTY']==2,
-                                     np.logical_and(self.data_sim['SIG'] >= self.config[self.algorithm]['sig_threshold'], 
-                                     self.data_sim['DIFFICULTY']==0))
-        cut_detect_sim_results_ts = np.logical_or(self.data_sim['DIFFICULTY']==2,
-                                    np.logical_and(self.data_sim['TS'] >= self.config[self.algorithm]['ts_threshold'], 
-                                    self.data_sim['DIFFICULTY'] == 0))
+        # Survey masks
+        cut_ebv = np.where(self.mask[pix] & 0b00001, False, True)
+        cut_associate = np.where(self.mask[pix] & 0b00010, False, True)
+        cut_dwarfs = np.where(self.mask[pix] & 0b00100, False, True)
+        cut_bsc = np.where(self.mask[pix] & 0b01000, False, True)
+        cut_footprint = np.where(self.mask[pix] & 0b10000, False, True)
+        cut_bulk = cut_ebv & cut_footprint & cut_associate & cut_bsc
+        
+        # Other cuts (modulus, size, shape)
+        if self.survey == 'ps1':
+            cut_modulus = (self.data_sim['DISTANCE_MODULUS'] < 21.75)
+        elif self.survey == 'des':
+            cut_modulus = (self.data_sim['DISTANCE_MODULUS'] < 23.5)  
+            
+        cut_final = cut_bulk & cut_dwarfs & cut_modulus # & cut_sig
+        self.data_sim = self.data_sim[cut_final]  
+        
+        # Detection thresholds
+        cut_detect_sim_results_sig = self.data_sim['SIG'] >= self.config[self.algorithm]['sig_threshold']
+        cut_detect_sim_results_ts = self.data_sim['TS'] >= self.config[self.algorithm]['ts_threshold']
         
         #Construct dataset
         x = []
@@ -214,26 +123,28 @@ class surveySelectionFunction:
                 x.append(np.log10(self.data_sim[key]))
         X = np.vstack(x).T
         
-        #Apply cuts and split into train/test sets
+        #Construct dataset
         mc_source_id_detect = self.data_sim['MC_SOURCE_ID'][cut_detect_sim_results_sig & cut_detect_sim_results_ts]
         cut_detect = np.in1d(self.data_sim['MC_SOURCE_ID'], mc_source_id_detect)
         
-        X = X[cut_geometry]
-        Y = cut_detect[cut_geometry]
+        Y = cut_detect
         indices = np.arange(len(X))
         X_train, X_test, Y_train, Y_test, cut_train, cut_test = train_test_split(X,Y,indices,test_size=0.1)
         
-        #Train random forest classifier
+        #Train MLP classifier
         if True:
             t_start = time.time()
-            parameters = {'n_estimators':(100, 250, 500), "min_samples_leaf": [1,2,4], 'criterion':["gini","entropy"]}
-            rf = RandomForestClassifier(oob_score=True)
-            rf_tuned = GridSearchCV(rf, parameters, cv=3, verbose=1)
-            self.classifier = rf_tuned.fit(X_train, Y_train)
+
+            mlp = MLPClassifier()
+            #mlp = MLPRegressor()
             
-            # Print the best score and estimator:
-            print('Best OOB Score:', self.classifier.best_score_)
-            print(self.classifier.best_estimator_)
+            parameter_space = {'alpha': [0.001, 0.005, 0.01, 0.05], 
+                               'hidden_layer_sizes': [x for x in itertools.product((50,50),repeat=3)]}
+            
+            clf = GridSearchCV(mlp, parameter_space, cv=3, verbose=1)#,fit_params={'sample_weight': 1./(0.5 + np.abs(self.data_sim['SIG'][cut_train]-7))})
+            self.classifier = clf.fit(X_train, Y_train)
+            
+            # Print the best hyperparameters:
             print(self.classifier.best_params_)
             t_end = time.time()
             print('  ... training took %.2f seconds'%(t_end - t_start))
@@ -243,7 +154,7 @@ class surveySelectionFunction:
             writer = open(self.config[self.algorithm]['classifier'], 'w')
             writer.write(classifier_data)
             writer.close()
-
+            
         #Else load classifier
         else:
             self.loadClassifier()
@@ -269,9 +180,8 @@ class surveySelectionFunction:
         plt.tick_params(labelsize=12)
         plt.show()
         
-        #ROC curve and AUC for each class:
+        #ROC curve and AUC for each class
         BestRFselector = self.classifier.best_estimator_
-        print(BestRFselector.feature_importances_)
         y_pred_best = BestRFselector.predict_proba(X_test)
         labels = BestRFselector.classes_
         fpr = dict()
@@ -282,21 +192,21 @@ class surveySelectionFunction:
             roc_auc[label] = auc(fpr[label], tpr[label])
             
         plt.figure(figsize=(8,6))
-        plt.plot([0, 1], [1, 1], color='red', linestyle='-', linewidth=3, label='Perfect Classifier (AUC = %0.3f)' % (1.0))
-        plt.plot(fpr[1], tpr[1], lw=3, label='Random Forest (AUC = %0.3f)' % (roc_auc[1]), color='blue')
-        plt.plot([0, 1], [0, 1], color='black', linestyle=':', linewidth=2.5, label='Random Classifier (AUC = %0.3f)' % (0.5))
+        plt.plot([0, 1], [1, 1], color='red', linestyle='-', linewidth=3, label='Perfect Classifier (AUC = %0.2f)' % (1.0))
+        plt.plot(fpr[1], tpr[1], lw=3, label='Random Forest (AUC = %0.2f)' % (roc_auc[1]), color='blue')
+        plt.plot([0, 1], [0, 1], color='black', linestyle=':', linewidth=2.5, label='Random Classifier (AUC = %0.2f)' % (0.5))
+
         plt.xlim([0.0, 1.0])
         plt.ylim([0.0, 1.025])
         plt.tick_params(labelsize=16)
         plt.xlabel('False Positive Rate', fontsize=20, labelpad=8)
         plt.ylabel('True Positive Rate', fontsize=20, labelpad=8)
         plt.legend(loc="lower right", fontsize=16)
-        plt.savefig('ROC.pdf')
-        plt.show()
+        plt.savefig('ROC_PS1.pdf')
 
-        self.validateClassifier(cut_detect, cut_train, cut_test, cut_geometry, y_pred)
+        self.validateClassifier(cut_detect, cut_train, cut_test, y_pred)
 
-    def validateClassifier(self, cut_detect, cut_train, cut_test, cut_geometry, y_pred):
+    def validateClassifier(self, cut_detect, cut_train, cut_test, y_pred):
         """
         Make some diagnostic plots
         """
@@ -325,7 +235,7 @@ class surveySelectionFunction:
                      'why_not': 'magenta',
                      'actual': 'black',
                      'hsc': 'black'}
-        
+
         import matplotlib
         cmap = matplotlib.colors.ListedColormap(['Gold', 'Orange', 'DarkOrange', 'OrangeRed', 'Red'])
         title = r'$N_{\rm{train}} =$ %i ; $N_{\rm{test}} =$ %i'%(len(cut_train),len(cut_test))
@@ -333,9 +243,9 @@ class surveySelectionFunction:
         pylab.figure()
         pylab.xscale('log')
         
-        rphys = self.data_sim['r_physical'][cut_geometry]
-        mag = self.data_sim['abs_mag'][cut_geometry]
-        detect = cut_detect[cut_geometry]
+        rphys = self.data_sim['r_physical']
+        mag = self.data_sim['abs_mag']
+        detect = cut_detect
         
         pylab.scatter(1.e3 * rphys[cut_train],
                       mag[cut_train], 
@@ -347,10 +257,6 @@ class surveySelectionFunction:
         colorbar = pylab.colorbar()
         colorbar.set_label('ML Predicted Detection Probability')
         pylab.scatter(0., 0., s=(3 * size['detect']), c='none', edgecolor='black', label='Test')
-        #pylab.scatter(1.e3 * r_physical_actual, abs_mag_actual, 
-        #              c=color['actual'], s=size['actual'], marker=marker['actual'], edgecolor=edgecolor['actual'], alpha=alpha['actual'], label='Actual MW Satellites')
-        #pylab.scatter(1.e3 * r_physical_actual[cut_hsc], abs_mag_actual[cut_hsc], 
-        #              c=color['hsc'], s=size['hsc'], marker=marker['hsc'], edgecolor=edgecolor['hsc'], alpha=alpha['hsc'], label='Actual MW Satellites: HSC')
         pylab.xlim(1., 3.e3)
         pylab.ylim(6., -12.)
         pylab.xlabel('Half-light Radius (pc)')
@@ -358,7 +264,6 @@ class surveySelectionFunction:
         pylab.legend(loc='upper left', markerscale=2)
         pylab.title(title)
 
-        import ugali.utils.bayesian_efficiency # Replace with standalone util
         bins = np.linspace(0., 1., 10 + 1)
         centers = np.empty(len(bins) - 1)
         bin_prob = np.empty(len(bins) - 1)
@@ -375,7 +280,7 @@ class surveySelectionFunction:
             bin_prob_err_hi[ii] = errorbar[1]
             bin_prob_err_lo[ii] = errorbar[0]
             bin_counts[ii] = np.sum(cut_bin)
-        
+
         fig = plt.figure(figsize=(8,6))
         ax = fig.add_subplot(111)
         sc = ax.scatter(centers, bin_prob, c=bin_counts, edgecolor='red', s=50, cmap='Reds', zorder=999)
@@ -390,12 +295,12 @@ class surveySelectionFunction:
         ax.set_yticklabels([r'$0.0$',r'$0.2$',r'$0.4$',r'$0.6$',r'$0.8$',r'$1.0$'],fontsize=18)
         ax.set_xlabel('Predicted Detection Probability',fontsize=22)
         ax.set_ylabel('Fraction Detected',fontsize=22)
-        ax.set_title(title,fontsize=24)
+        ax.set_title(title,fontsize=22)
         cbar = plt.colorbar(sc)
         cbar.set_label(r'Counts',size=20,labelpad=4)
         cbar.ax.tick_params(labelsize=16) 
         plt.tight_layout()
-        plt.savefig('training.pdf')
+        plt.savefig('training_PS1.pdf')
         plt.show()
 
     def loadClassifier(self):
@@ -407,52 +312,26 @@ class surveySelectionFunction:
         reader.close()
         self.classifier = pickle.loads(classifier_data)
 
-    def applyFracdet(self, lon, lat):
-        """
-        Enforce minimum fracdet for a satellite to be considered detectable
-        True is passes fracdet cut
-        """
-        self.loadFracdet()
-        fracdet_core = meanFracdet(self.m_fracdet, lon, lat, np.tile(0.1, len(lon)))
-        fracdet_wide = meanFracdet(self.m_fracdet, lon, lat, np.tile(0.5, len(lon)))
-        
-        return (fracdet_core >= self.config[self.algorithm]['fracdet_core_threshold']) \
-            & (fracdet_wide >= self.config[self.algorithm]['fracdet_wide_threshold'])
-
-    def applyHotspot(self, lon, lat):
-        """
-        Exclude objects that are too close to hotspot
-        True if passes hotspot cut
-        """
-        self.loadRealResults()
-        lon_real = self.data_real['RA']
-        lat_real = self.data_real['DEC']
-
-        cut_hotspot = np.tile(True, len(lon))
-        for ii in range(0, len(lon)):
-            cut_hotspot[ii] = ~np.any(angsep(lon[ii], lat[ii], lon_real, lat_real) < self.config[self.algorithm]['hotspot_angsep_threshold'])
-
-        return cut_hotspot
-
-    def applyGeometry(self, lon, lat):
-        cut_fracdet = self.applyFracdet(lon, lat)
-        cut_hotspot = self.applyHotspot(lon, lat)
-        cut_geometry = cut_fracdet & cut_hotspot
-
-        flags_geometry = np.tile(0, len(lon))
-        flags_geometry[~cut_fracdet] += 1
-        flags_geometry[~cut_hotspot] += 2
-
-        return cut_geometry, flags_geometry
-
     def predict(self, lon, lat, **kwargs):
         """
         distance, abs_mag, r_physical
         """
         assert self.classifier is not None, 'ERROR'
-
-        pred = np.zeros(len(lon))
-        cut_geometry, flags_geometry = self.applyGeometry(lon, lat)
+        
+        pred = np.zeros(len(long))
+        
+        pix = ugali.utils.healpix.angToPix(4096, lon, lat, nest=True)
+        mask = ugali.utils.healpix.read_map('/nfs/slac/g/ki/ki21/cosmo/ollienad/Data/DES/healpix_mask_{}.fits'.format(self.survey), nest=True)
+        
+        cut_ebv = np.where(self.mask[pix] & 0b00001, False, True)
+        cut_associate = np.where(self.mask[pix] & 0b00010, False, True)
+        cut_dwarfs = np.where(self.mask[pix] & 0b00100, False, True)
+        cut_bsc = np.where(self.mask[pix] & 0b01000, False, True)
+        cut_footprint = np.where(self.mask[pix] & 0b10000, False, True)
+        cut_bulk = cut_ebv & cut_footprint & cut_associate & cut_bsc  
+            
+        cut_final = cut_bulk & cut_dwarfs # & cut_sig
+        self.data_sim = self.data_sim[cut_final]  
     
         x_test = []
         for key, operation in self.config['operation']['params_intrinsic']:
@@ -463,12 +342,13 @@ class surveySelectionFunction:
                 x_test.append(np.log10(kwargs[key]))
 
         x_test = np.vstack(x_test).T
-        pred[cut_geometry] = self.classifier.predict_proba(x_test[cut_geometry])[:,1]
-        self.validatePredict(pred, flags_geometry, lon, lat, kwargs['r_physical'], kwargs['abs_mag'], kwargs['distance'])
+        pred[cut_final] = self.classifier.predict_proba(x_test[cut_final])[:,1]
+
+        self.validatePredict(pred, cut_final, lon, lat, kwargs['r_physical'], kwargs['abs_mag'], kwargs['distance'])
 
         return pred, flags_geometry
 
-    def validatePredict(self, pred, flags_geometry, lon, lat, r_physical, abs_mag, distance):
+    def validatePredict(self, pred, cut_final, lon, lat, r_physical, abs_mag, distance):
         import matplotlib
         cmap = matplotlib.colors.ListedColormap(['Gold', 'Orange', 'DarkOrange', 'OrangeRed', 'Red'])
 
@@ -478,9 +358,9 @@ class surveySelectionFunction:
 
         pylab.figure()
         pylab.xscale('log')
-        pylab.scatter(1.e3 * r_physical[flags_geometry == 0], 
-                      abs_mag[flags_geometry == 0], 
-                      c=pred[flags_geometry == 0], vmin=0., vmax=1., s=10, cmap=cmap)
+        pylab.scatter(1.e3 * r_physical[cut_final], 
+                      abs_mag[cut_final], 
+                      c=pred[cut_final], vmin=0., vmax=1., s=10, cmap=cmap)
         pylab.plot([3,300],[0.0,-10.0],c='black', ls='--')
         pylab.plot([30,1000],[0.0,-7.75],c='black', ls='--')
         pylab.colorbar().set_label('ML Predicted Detection Probability')
@@ -491,9 +371,9 @@ class surveySelectionFunction:
 
         pylab.figure()
         pylab.xscale('log')
-        pylab.scatter(distance[flags_geometry == 0], 
-                      abs_mag[flags_geometry == 0], 
-                      c=pred[flags_geometry == 0], vmin=0., vmax=1., s=10, cmap=cmap) 
+        pylab.scatter(distance[cut_final], 
+                      abs_mag[cut_final], 
+                      c=pred[cut_final], vmin=0., vmax=1., s=10, cmap=cmap) 
         pylab.colorbar().set_label('ML Predicted Detection Probability')
         pylab.xlim(3., 600.)
         pylab.ylim(6., -12.)
